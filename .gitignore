@@ -1,0 +1,59 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vercel
+
+# Secrets
+.env
+.env.local
+.env.production
+.env.preview
+.env.development
+
+# Not part of the deployed app — internal/one-off/leaked-secret scripts
+drafts/
+CHERRY_RIVER_AI_MEMORY.md
+generate-gin-lemon-v2.mjs
+generate-gin-lemon-videos.mjs
+stitch-gin-lemon.mjs
+import-products.mjs
+reset-francis-password.mjs
+diagnose_color_tmp.mjs
+migrate.js
+data.json
+Trevor_ContentFactory_Proposal_FINAL.pdf
+
+# Local tool/test state, not source
+.claude/
+.playwright-mcp/
+.venv/
+supabase/.temp/
+uploads/
+reference_videos/
+walkthrough-frames/
+*.jpg
+*.jpeg
+*.png
+!public/**
+!src/**
