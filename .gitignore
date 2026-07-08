@@ -31,18 +31,6 @@ dist-ssr
 .env.preview
 .env.development
 
-# Not part of the deployed app — internal/one-off/leaked-secret scripts
-drafts/
-CHERRY_RIVER_AI_MEMORY.md
-generate-gin-lemon-v2.mjs
-generate-gin-lemon-videos.mjs
-stitch-gin-lemon.mjs
-import-products.mjs
-reset-francis-password.mjs
-diagnose_color_tmp.mjs
-migrate.js
-data.json
-Trevor_ContentFactory_Proposal_FINAL.pdf
 
 # Local tool/test state, not source
 .claude/
