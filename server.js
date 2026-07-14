@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { mountMcp } from "./mcp.js";
 import cors from "cors";
 import Replicate from "replicate";
 import Anthropic from "@anthropic-ai/sdk";
@@ -2052,5 +2053,7 @@ const PORT = process.env.PORT || 3001;
 if (process.env.VERCEL !== '1') {
   app.listen(PORT, () => console.log(`Cherry River AI backend running on http://localhost:${PORT}`));
 }
+
+mountMcp(app);
 
 export default app;
