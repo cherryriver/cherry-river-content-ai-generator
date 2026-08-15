@@ -15,6 +15,7 @@ import { writeFile, readFile, unlink } from "fs/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
+import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
 
 const execFileAsync = promisify(execFile);
 // Use bundled ffmpeg (works on Vercel serverless) with local system ffmpeg as fallback
@@ -788,10 +789,12 @@ async function getUserId(req) {
 }
 
 async function getUser(req) {
-  const token = extractAccessToken(req.headers)
-  if (!token) return null
-  const { data: { user } } = await supabase.auth.getUser(token)
-  return user || null
+  return resolveAuthenticatedUser(req, {
+    localAuth: async (token) => {
+      const { data: { user } } = await supabase.auth.getUser(token)
+      return user || null
+    },
+  })
 }
 
 async function insertGeneration(row) {
