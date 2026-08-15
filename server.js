@@ -14,6 +14,7 @@ import { join } from "path";
 import { writeFile, readFile, unlink } from "fs/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { createHash } from "crypto";
+import { extractAccessToken } from "./auth-token.js";
 
 const execFileAsync = promisify(execFile);
 // Use bundled ffmpeg (works on Vercel serverless) with local system ffmpeg as fallback
@@ -780,14 +781,14 @@ async function generateProductImage({ product, productName, productColor, userPr
 
 // Extract authenticated user ID from Bearer token
 async function getUserId(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '')
+  const token = extractAccessToken(req.headers)
   if (!token) return null
   const { data: { user } } = await supabase.auth.getUser(token)
   return user?.id || null
 }
 
 async function getUser(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '')
+  const token = extractAccessToken(req.headers)
   if (!token) return null
   const { data: { user } } = await supabase.auth.getUser(token)
   return user || null

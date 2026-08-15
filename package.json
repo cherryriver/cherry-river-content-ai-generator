@@ -9,7 +9,8 @@
     "dev:all": "node server.js & vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test auth-token.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",
