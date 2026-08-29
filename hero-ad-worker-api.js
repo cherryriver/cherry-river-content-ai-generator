@@ -80,7 +80,23 @@ export async function migrateLegacyHeroAdDraftsRc2({
       if (source && (source.sha256 !== target.sha256 || source.size !== target.size)) {
         throw new Error(`private_copy_mismatch:${path}`);
       }
-      evidence.push({ path, size: target.size, sha256: target.sha256, hadPublicSource: Boolean(source) });
+      const { data: signed, error: signedError } = await supabase.storage
+        .from(privateBucket).createSignedUrl(path, 120);
+      if (signedError || !signed?.signedUrl) throw new Error(`private_sign_failed:${path}`);
+      const signedResponse = await fetch(signed.signedUrl, { redirect: "error" });
+      if (!signedResponse.ok) throw new Error(`private_signed_download_failed:${path}`);
+      const signedBytes = Buffer.from(await signedResponse.arrayBuffer());
+      const signedHash = createHash("sha256").update(signedBytes).digest("hex");
+      if (signedHash !== target.sha256 || signedBytes.length !== target.size) {
+        throw new Error(`private_signed_copy_mismatch:${path}`);
+      }
+      evidence.push({
+        path,
+        size: target.size,
+        sha256: target.sha256,
+        hadPublicSource: Boolean(source),
+        signedReviewVerified: true,
+      });
     }
   }
 

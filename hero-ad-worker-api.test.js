@@ -112,6 +112,14 @@ test("RC2 migration copies, verifies, rewrites and removes exactly the three pub
             for (const path of paths) stores[bucket].delete(path);
             return { error: null };
           },
+          createSignedUrl: async (path) => {
+            const bytes = stores[bucket].get(path);
+            if (!bytes) return { data: null, error: { message: "not found" } };
+            return {
+              data: { signedUrl: `data:video/mp4;base64,${bytes.toString("base64")}` },
+              error: null,
+            };
+          },
         };
       },
     },
@@ -124,6 +132,7 @@ test("RC2 migration copies, verifies, rewrites and removes exactly the three pub
   assert.equal(stores["hero-ad-drafts"].size, 3);
   assert.ok(jobs.every((job) => job.output_bucket === "hero-ad-drafts"));
   assert.ok(jobs.every((job) => job.output_url.startsWith("storage://hero-ad-drafts/")));
+  assert.ok(first.evidence.every((item) => item.signedReviewVerified === true));
 
   const second = await migrateLegacyHeroAdDraftsRc2({ supabase });
   assert.equal(second.objects, 3);
