@@ -92,7 +92,7 @@ Le worker reçoit uniquement des URL Supabase signées. Les MP4 transitent direc
 - fin rendu : `2026-08-29T14:57:13.256826Z`;
 - handoff de revue : `87c64549-1ed4-442c-81d9-316f8af511e3`;
 - publication effectuée : false;
-- sortie verticale : 1080 × 1920, H.264, 6,059 secondes, 9 045 365 octets, HTTP 200 :  
+- sortie verticale : 1080 × 1920, H.264, 6,059 secondes, 9 045 365 octets, HTTP 200 :
   `https://bypedtyxtnmmdsyrgwpj.supabase.co/storage/v1/object/public/videos/hero-ads/8753b83f-9983-4471-9f3b-220a6817447a/vertical.mp4`
 
 La comparaison SHA-256 de trois images extraites à 1, 3 et 5 secondes confirme que la vidéo évolue dans le temps. L'inspection visuelle confirme l'utilisation de la vraie bouteille et une étiquette nette. Le fond noir rectangulaire déjà présent autour de l'actif produit demeure visible dans la composition et exige une décision créative humaine avant approbation.
