@@ -16,6 +16,7 @@ import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
 import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
+import { createGenerateAdHandler } from "./hero-ad.js";
 
 const execFileAsync = promisify(execFile);
 // Use bundled ffmpeg (works on Vercel serverless) with local system ffmpeg as fallback
@@ -1239,6 +1240,13 @@ app.post("/api/generate-image", async (req, res) => {
     res.status(500).json({ success: false, error: error.message || "Failed to generate image" });
   }
 });
+
+// HERO AD queues local Remotion work only. No Chromium/FFmpeg render runs on Vercel.
+app.post("/api/generate-ad", createGenerateAdHandler({
+  supabase,
+  getUser,
+  piApiKey: process.env.PIAPI_API_KEY,
+}));
 
 
 // --- Video Generation ---
