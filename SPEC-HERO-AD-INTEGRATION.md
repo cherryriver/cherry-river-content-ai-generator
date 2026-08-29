@@ -38,11 +38,14 @@ Réponse acceptée :
 
 ## Worker local
 
-Variables serveur requises, jamais committées :
+Variables locales requises, jamais committées :
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `MEDIAOS_AI_BASE_URL` seulement si l'URL par défaut doit être remplacée
+- `HERO_AD_WORKER_TOKEN`, jeton limité aux trois routes worker;
+- `MEDIAOS_AI_BASE_URL` seulement si l'URL par défaut doit être remplacée.
+
+Le worker ne détient jamais `SUPABASE_SERVICE_ROLE_KEY`. Vercel réclame le job
+et crée des URL d'upload Supabase signées; le MP4 va directement du Dell vers
+Supabase Storage sans traverser la fonction Vercel.
 
 Exécution ponctuelle :
 
@@ -62,7 +65,7 @@ npm run worker:hero -- --worker-id=<identité-locale> --poll-ms=5000
 - L'unique image produit est `products.image`; aucun produit, emballage ou texte d'étiquette n'est généré par IA.
 - Une sortie s'arrête à `READY_FOR_REVIEW`; `APPROVED` exige une action humaine distincte.
 - Le navigateur ne peut ni écrire dans `mkt_ad_jobs`, ni réclamer un job.
-- Le secret `service_role` reste uniquement dans l'environnement du worker et du serveur.
+- Le secret `service_role` reste uniquement dans l'environnement Vercel; le lift utilise un jeton worker dédié et révocable.
 - Chaque migration est additive et possède un rollback versionné.
 
 ## Canari local de référence

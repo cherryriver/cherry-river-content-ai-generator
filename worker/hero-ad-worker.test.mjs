@@ -14,17 +14,11 @@ test("parses one-shot worker options", () => {
   assert.deepEqual(options, { once: true, workerId: "lift-local", pollMs: 2500 });
 });
 
-test("requires server-only Supabase credentials without exposing values", () => {
-  assert.throws(() => validateWorkerEnvironment({}), /SUPABASE_URL_required/);
-  assert.throws(
-    () => validateWorkerEnvironment({ SUPABASE_URL: "https://example.supabase.co" }),
-    /SUPABASE_SERVICE_ROLE_KEY_required/,
-  );
-  const config = validateWorkerEnvironment({
-    SUPABASE_URL: "https://example.supabase.co",
-    SUPABASE_SERVICE_ROLE_KEY: "not-logged",
-  });
-  assert.equal(config.generatorBaseUrl, "https://cherry-river-ai.vercel.app");
+test("requires only the scoped worker token and never a service-role key", () => {
+  assert.throws(() => validateWorkerEnvironment({}), /HERO_AD_WORKER_TOKEN_required/);
+  const config = validateWorkerEnvironment({ HERO_AD_WORKER_TOKEN: "not-logged" });
+  assert.equal(config.generatorBaseUrl, "https://cherry-river-content-ai-generator.vercel.app/");
+  assert.equal(config.workerToken, "not-logged");
 });
 
 test("polls a bounded background task and follows one provider retry", async () => {
@@ -80,35 +74,38 @@ test("processes one claimed job through render, upload, review, and notification
     },
   };
   const result = await processOneJob({
-    supabase: {},
     workerId: "lift-local",
-    generatorBaseUrl: "https://cherry-river-ai.vercel.app",
+    config: { generatorBaseUrl: "https://generator.example/", workerToken: "secret" },
     env: {},
-    claimJobImpl: async () => job,
+    claimImpl: async () => ({
+      job,
+      uploads: {
+        vertical: { path: `hero-ads/${job.id}/vertical.mp4`, signedUrl: "https://upload.example/vertical" },
+        horizontal: { path: `hero-ads/${job.id}/horizontal.mp4`, signedUrl: "https://upload.example/horizontal" },
+      },
+    }),
     makeTempDir: async () => "C:/temp/hero-ad-test",
     removeTempDir: async (directory) => events.push(["cleanup", directory]),
     renderImpl: async (input) => {
       events.push(["render", input.image, input.format]);
       return { vertical: "vertical.mp4", horizontal: "horizontal.mp4" };
     },
-    uploadImpl: async (_supabase, jobId, outputs) => {
-      events.push(["upload", jobId, outputs]);
+    uploadImpl: async ({ outputs }) => {
+      events.push(["upload", job.id, outputs]);
       return {
-        vertical: "https://storage.example/vertical.mp4",
-        horizontal: "https://storage.example/horizontal.mp4",
+        vertical: { path: `hero-ads/${job.id}/vertical.mp4` },
+        horizontal: { path: `hero-ads/${job.id}/horizontal.mp4` },
       };
     },
-    markReadyImpl: async (_supabase, claimedJob, outputUrls) => {
-      events.push(["ready", claimedJob.id, outputUrls]);
-      return { id: claimedJob.id, status: "READY_FOR_REVIEW", output_urls: outputUrls };
+    requestImpl: async ({ pathName, body }) => {
+      events.push(["complete", pathName, body]);
+      return { id: job.id, status: "READY_FOR_REVIEW", output_urls: body.outputs };
     },
-    notifyImpl: async (_supabase, claimedJob) => events.push(["notify", claimedJob.id]),
-    markFailedImpl: async () => assert.fail("successful job must not be marked failed"),
   });
 
   assert.equal(result.processed, true);
   assert.equal(result.job.status, "READY_FOR_REVIEW");
-  assert.deepEqual(events.map(([event]) => event), ["render", "upload", "ready", "notify", "cleanup"]);
+  assert.deepEqual(events.map(([event]) => event), ["render", "upload", "complete", "cleanup"]);
   assert.deepEqual(events[0], ["render", inventoryImage, "both"]);
 });
 
@@ -117,26 +114,22 @@ test("marks a claimed job failed once and cleans its isolated render directory",
   const failure = new Error("render failed safely");
   await assert.rejects(
     processOneJob({
-      supabase: {},
       workerId: "lift-local",
-      generatorBaseUrl: "https://cherry-river-ai.vercel.app",
+      config: { generatorBaseUrl: "https://generator.example/", workerToken: "secret" },
       env: {},
-      claimJobImpl: async () => ({
-        id: "00000000-0000-4000-8000-000000000002",
-        product_id: "1776357908660",
-        format: "vertical",
-        worker_id: "lift-local",
-        input_props: { productImage: inventoryImage, brandName: "CHERRY RIVER" },
-      }),
+      claimImpl: async () => ({ job: {
+          id: "00000000-0000-4000-8000-000000000002",
+          product_id: "1776357908660", format: "vertical", worker_id: "lift-local",
+          input_props: { productImage: inventoryImage, brandName: "CHERRY RIVER" },
+        }, uploads: {} }),
       makeTempDir: async () => "C:/temp/hero-ad-failure-test",
       removeTempDir: async () => events.push("cleanup"),
       renderImpl: async () => { throw failure; },
       uploadImpl: async () => assert.fail("failed render must not upload"),
-      markReadyImpl: async () => assert.fail("failed render must not become ready"),
-      notifyImpl: async () => assert.fail("failed render must not notify review"),
-      markFailedImpl: async (_supabase, job, error) => {
-        assert.equal(job.id, "00000000-0000-4000-8000-000000000002");
-        assert.equal(error, failure);
+      requestImpl: async ({ pathName, body }) => {
+        assert.equal(pathName, "/api/hero-ad-worker/fail");
+        assert.equal(body.jobId, "00000000-0000-4000-8000-000000000002");
+        assert.match(body.error, /render failed safely/);
         events.push("failed");
       },
     }),

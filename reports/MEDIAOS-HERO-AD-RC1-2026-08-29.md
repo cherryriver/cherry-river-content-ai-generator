@@ -61,7 +61,7 @@ Schéma :
 
 L'endpoint relit toujours le produit dans `public.products`, exige `status=ready` et exige une image HTTPS provenant du stockage Supabase MediaOS autorisé. Il inscrit uniquement un job `QUEUED`; aucun module Remotion n'est importé par `server.js`.
 
-Le worker local utilise un secret `service_role` fourni seulement par son environnement. Il réclame au maximum un job grâce à `FOR UPDATE SKIP LOCKED`, rend dans un répertoire temporaire isolé, téléverse dans le bucket `videos`, puis inscrit `READY_FOR_REVIEW`. Un échec produit `FAILED`; le worker ne publie jamais.
+Le worker local utilise un jeton limité aux routes worker. La clé `service_role` demeure dans Vercel. Le serveur réclame au maximum un job grâce à `FOR UPDATE SKIP LOCKED` et fournit des URL Supabase signées; les MP4 vont directement du Dell au bucket `videos`. Le worker inscrit ensuite `READY_FOR_REVIEW`. Un échec produit `FAILED`; le worker ne publie jamais.
 
 Le fond Seedance optionnel est abstrait et interdit explicitement bouteille, canette, emballage, étiquette, logo, texte, personne et mains. L'image produit demeure l'image statique réelle de l'inventaire.
 
@@ -80,7 +80,7 @@ Inspection visuelle : la bouteille réelle et son étiquette sont visibles et ne
 
 ## Tests
 
-- tests Node Content Generator : `21/21 PASS`;
+- tests Node Content Generator : `24/24 PASS`;
 - build Vite : `PASS`, 1 789 modules;
 - audit npm : `0 vulnérabilité`;
 - syntaxe Node du endpoint et du worker : `PASS`;
@@ -104,7 +104,7 @@ Inspection visuelle : la bouteille réelle et son étiquette sont visibles et ne
 ## Risques résiduels
 
 1. La migration n'est pas appliquée en production et le Content Generator n'est pas redéployé; le flux réel queue → worker → Storage n'est donc pas encore actif.
-2. Le worker local n'est pas encore installé comme service permanent; le présent RC1 fournit le processus et son mode `--once`.
+2. Le worker local doit être installé comme service permanent après validation du jeton worker dédié; le présent RC1 fournit aussi son mode `--once`.
 3. Les tables production préexistantes `public.products` et `public.generations` ont été observées avec RLS désactivé. Ce risque n'est pas créé par RC1 et ne doit pas être corrigé sans politiques compatibles.
 4. La branche staging possède des alertes préexistantes sans lien avec Hero Ad, notamment une vue `mkt_product_signals_public` en `SECURITY DEFINER` et des fonctions existantes trop largement exécutables.
 5. Le warning Vite de chunk supérieur à 500 kB est préexistant et non bloquant.

@@ -10,7 +10,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test auth-token.test.js mediaos-core-auth.test.js hero-ad.test.js worker/hero-ad-worker.test.mjs",
+    "test": "node --test auth-token.test.js mediaos-core-auth.test.js hero-ad.test.js hero-ad-worker-api.test.js worker/hero-ad-worker.test.mjs",
     "render:hero": "node remotion/render-hero.mjs",
     "worker:hero": "node worker/hero-ad-worker.mjs"
   },

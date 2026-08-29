@@ -17,6 +17,7 @@ import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
 import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
 import { createGenerateAdHandler } from "./hero-ad.js";
+import { createHeroAdWorkerHandlers, requireHeroAdWorkerToken } from "./hero-ad-worker-api.js";
 
 const execFileAsync = promisify(execFile);
 // Use bundled ffmpeg (works on Vercel serverless) with local system ffmpeg as fallback
@@ -1247,6 +1248,12 @@ app.post("/api/generate-ad", createGenerateAdHandler({
   getUser,
   piApiKey: process.env.PIAPI_API_KEY,
 }));
+
+const heroAdWorker = createHeroAdWorkerHandlers({ supabase });
+const authorizeHeroAdWorker = requireHeroAdWorkerToken(process.env.HERO_AD_WORKER_TOKEN);
+app.post("/api/hero-ad-worker/claim", authorizeHeroAdWorker, heroAdWorker.claim);
+app.post("/api/hero-ad-worker/complete", authorizeHeroAdWorker, heroAdWorker.complete);
+app.post("/api/hero-ad-worker/fail", authorizeHeroAdWorker, heroAdWorker.fail);
 
 
 // --- Video Generation ---
