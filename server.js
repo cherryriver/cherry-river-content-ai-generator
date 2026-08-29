@@ -1258,6 +1258,7 @@ const authorizeHeroAdWorker = requireHeroAdWorkerToken(process.env.HERO_AD_WORKE
 app.post("/api/hero-ad-worker/claim", authorizeHeroAdWorker, heroAdWorker.claim);
 app.post("/api/hero-ad-worker/complete", authorizeHeroAdWorker, heroAdWorker.complete);
 app.post("/api/hero-ad-worker/fail", authorizeHeroAdWorker, heroAdWorker.fail);
+app.post("/api/hero-ad-worker/migrate-private-drafts-rc2", authorizeHeroAdWorker, heroAdWorker.migratePrivateDraftsRc2);
 
 
 // --- Video Generation ---

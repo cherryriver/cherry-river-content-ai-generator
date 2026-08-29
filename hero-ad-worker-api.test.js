@@ -5,6 +5,8 @@ import {
   createHeroAdWorkerHandlers,
   expectedFormats,
   HERO_AD_DRAFT_BUCKET,
+  LEGACY_HERO_AD_JOBS_RC2,
+  migrateLegacyHeroAdDraftsRc2,
   requireHeroAdWorkerToken,
   storageObjectRef,
 } from "./hero-ad-worker-api.js";
@@ -60,4 +62,71 @@ test("format and object-path contracts are deterministic", () => {
     storageObjectRef("hero-ad-drafts", "hero-ads/job/vertical.mp4"),
     "storage://hero-ad-drafts/hero-ads/job/vertical.mp4",
   );
+});
+
+test("RC2 migration copies, verifies, rewrites and removes exactly the three public drafts", async () => {
+  const jobs = Object.entries(LEGACY_HERO_AD_JOBS_RC2).map(([id, formats]) => ({
+    id,
+    format: formats.length === 2 ? "both" : formats[0],
+    status: "READY_FOR_REVIEW",
+    output_bucket: null,
+    output_url: "legacy-public-url",
+    output_urls: {},
+  }));
+  const stores = { videos: new Map(), "hero-ad-drafts": new Map() };
+  for (const [jobId, formats] of Object.entries(LEGACY_HERO_AD_JOBS_RC2)) {
+    for (const format of formats) {
+      stores.videos.set(canonicalObjectPath(jobId, format), Buffer.from(`${jobId}:${format}`));
+    }
+  }
+  const supabase = {
+    from(table) {
+      assert.equal(table, "mkt_ad_jobs");
+      return {
+        select: () => ({ in: async () => ({ data: jobs, error: null }) }),
+        update: (patch) => ({
+          eq: (_field, id) => ({
+            eq: async () => {
+              Object.assign(jobs.find((job) => job.id === id), patch);
+              return { error: null };
+            },
+          }),
+        }),
+      };
+    },
+    storage: {
+      from(bucket) {
+        return {
+          download: async (path) => {
+            const bytes = stores[bucket].get(path);
+            return bytes
+              ? { data: new Blob([bytes], { type: "video/mp4" }), error: null }
+              : { data: null, error: { message: "not found" } };
+          },
+          upload: async (path, bytes) => {
+            if (stores[bucket].has(path)) return { error: { message: "already exists" } };
+            stores[bucket].set(path, Buffer.from(bytes));
+            return { error: null };
+          },
+          remove: async (paths) => {
+            for (const path of paths) stores[bucket].delete(path);
+            return { error: null };
+          },
+        };
+      },
+    },
+  };
+
+  const first = await migrateLegacyHeroAdDraftsRc2({ supabase });
+  assert.equal(first.jobs, 2);
+  assert.equal(first.objects, 3);
+  assert.equal(stores.videos.size, 0);
+  assert.equal(stores["hero-ad-drafts"].size, 3);
+  assert.ok(jobs.every((job) => job.output_bucket === "hero-ad-drafts"));
+  assert.ok(jobs.every((job) => job.output_url.startsWith("storage://hero-ad-drafts/")));
+
+  const second = await migrateLegacyHeroAdDraftsRc2({ supabase });
+  assert.equal(second.objects, 3);
+  assert.ok(second.evidence.every((item) => item.hadPublicSource === false));
+  assert.equal(stores["hero-ad-drafts"].size, 3);
 });
