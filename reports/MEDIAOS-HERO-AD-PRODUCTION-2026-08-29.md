@@ -10,12 +10,22 @@ Publication sociale : aucune
 - branche : `codex/mediaos-hero-ad-generator-rc1-20260829`;
 - commit worker sécurisé : `26251a73e1be13e241ba0ea01d9f7298c07a8f9b`;
 - projet Vercel : `prj_7rlxFEHA3hFvCVgWaWigMk9d9Lxz`;
-- déploiement production : `dpl_Bisve6U4qTqNtTkDarS1djFgz6JG`;
+- déploiement production initial : `dpl_Bisve6U4qTqNtTkDarS1djFgz6JG`;
+- déploiement production après raccord PiAPI : `dpl_8AYQ6CdwwWvdQe2yVsUEhVi6vmci`;
 - domaine : `https://cherry-river-content-ai-generator.vercel.app`;
 - `/api/health` : HTTP 200;
 - endpoint sans authentification : HTTP 401;
 - worker avec faux jeton : HTTP 401;
 - erreurs runtime Vercel après canari : 0.
+
+## Raccord PiAPI
+
+- variable sensible `PIAPI_API_KEY` ajoutée à l'environnement Vercel `Production` seulement;
+- valeur absente de Git, des journaux et du présent rapport;
+- authentification directe auprès de l'API PiAPI : PASS;
+- redéploiement Vercel : READY;
+- domaine canonique après propagation : HTTP 200 sur `/api/health`;
+- génération payante pendant le contrôle de raccord : aucune.
 
 ## Migration production
 
@@ -85,24 +95,24 @@ Le worker reçoit uniquement des URL Supabase signées. Les MP4 transitent direc
 
 - Supabase production : table, fonctions, trigger, policy et un job canari;
 - Supabase Storage : deux MP4 canaris;
-- Vercel production : nouveau déploiement et variable sensible `HERO_AD_WORKER_TOKEN`;
+- Vercel production : déploiements contrôlés et variables sensibles `HERO_AD_WORKER_TOKEN` et `PIAPI_API_KEY`;
 - Windows Dell : worktree service, lanceur, jeton DPAPI et tâche planifiée;
 - Git : branche Generator poussée; branche de migration poussée.
 
 ## Risques résiduels
 
 1. La tâche utilise le profil Windows courant : elle tourne pendant une session utilisateur et redémarre à la prochaine ouverture de session. Le Dell doit demeurer allumé et connecté.
-2. `PIAPI_API_KEY` n'est pas configurée dans le projet Vercel actuel. Les Hero Ads statiques fonctionnent; l'option `withBackground=true` échoue fermée jusqu'au raccord PiAPI.
+2. Le raccord PiAPI est authentifié, mais aucun canari payant `withBackground=true` n'a été exécuté pendant l'installation de la clé; le parcours vidéo complet demeure à confirmer par une génération bornée.
 3. Les tables préexistantes `public.products` et `public.generations` ont RLS désactivé. Ce risque n'a pas été élargi par Hero Ad et exige un chantier séparé avec policies compatibles.
 4. Le bucket `videos` est public par conception actuelle; les brouillons possédant leur URL sont donc accessibles. Une politique de brouillons privés/signés constitue un durcissement futur.
 
 ## Rollback
 
 1. Arrêter et désactiver `DELAGE-MEDIAOS-HERO-AD-WORKER`.
-2. Restaurer Vercel vers `dpl_8ZZhnMrYjvQANRcChJ7JCo3X8hdN` pour retirer le pont worker, ou vers `dpl_3r7kqRsWDBpwfNdbWCb7kJjfrmup` pour revenir avant Hero Ad.
+2. Restaurer Vercel vers `dpl_Bisve6U4qTqNtTkDarS1djFgz6JG` pour revenir avant le raccord PiAPI, vers `dpl_8ZZhnMrYjvQANRcChJ7JCo3X8hdN` pour retirer le pont worker, ou vers `dpl_3r7kqRsWDBpwfNdbWCb7kJjfrmup` pour revenir avant Hero Ad.
 3. Appliquer `supabase/migrations/20260829131028_media_os_hero_ad_jobs_rc1.down.sql` si la fonction Hero Ad doit être entièrement retirée.
 4. Supprimer explicitement les deux objets `videos/hero-ads/ff01fc74-6c3c-4ea8-a2fd-904fc2a72223/` seulement si Francis demande d'effacer la preuve canari.
-5. Supprimer la variable Vercel `HERO_AD_WORKER_TOKEN` et la valeur DPAPI locale.
+5. Supprimer les variables Vercel `HERO_AD_WORKER_TOKEN` et `PIAPI_API_KEY`, puis la valeur DPAPI locale.
 
 ## Décision
 
