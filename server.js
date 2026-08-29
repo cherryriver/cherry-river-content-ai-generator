@@ -16,7 +16,7 @@ import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
 import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
-import { createGenerateAdHandler } from "./hero-ad.js";
+import { createGenerateAdHandler, createHeroAdReviewHandler } from "./hero-ad.js";
 import { createHeroAdWorkerHandlers, requireHeroAdWorkerToken } from "./hero-ad-worker-api.js";
 
 const execFileAsync = promisify(execFile);
@@ -1247,6 +1247,10 @@ app.post("/api/generate-ad", createGenerateAdHandler({
   supabase,
   getUser,
   piApiKey: process.env.PIAPI_API_KEY,
+}));
+app.get("/api/ad-jobs/:jobId/review-urls", createHeroAdReviewHandler({
+  supabase,
+  getUser,
 }));
 
 const heroAdWorker = createHeroAdWorkerHandlers({ supabase });

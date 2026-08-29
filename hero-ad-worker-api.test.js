@@ -4,7 +4,9 @@ import {
   canonicalObjectPath,
   createHeroAdWorkerHandlers,
   expectedFormats,
+  HERO_AD_DRAFT_BUCKET,
   requireHeroAdWorkerToken,
+  storageObjectRef,
 } from "./hero-ad-worker-api.js";
 
 function response() {
@@ -43,6 +45,7 @@ test("claim returns only canonical signed upload targets for the job", async () 
   assert.deepEqual(Object.keys(res.payload.uploads), ["vertical", "horizontal"]);
   assert.equal(res.payload.uploads.vertical.path, `hero-ads/${job.id}/vertical.mp4`);
   assert.equal(res.payload.uploads.horizontal.path, `hero-ads/${job.id}/horizontal.mp4`);
+  assert.equal(HERO_AD_DRAFT_BUCKET, "hero-ad-drafts");
 });
 
 test("format and object-path contracts are deterministic", () => {
@@ -52,5 +55,9 @@ test("format and object-path contracts are deterministic", () => {
   assert.equal(
     canonicalObjectPath("00000000-0000-4000-8000-000000000001", "vertical"),
     "hero-ads/00000000-0000-4000-8000-000000000001/vertical.mp4",
+  );
+  assert.equal(
+    storageObjectRef("hero-ad-drafts", "hero-ads/job/vertical.mp4"),
+    "storage://hero-ad-drafts/hero-ads/job/vertical.mp4",
   );
 });

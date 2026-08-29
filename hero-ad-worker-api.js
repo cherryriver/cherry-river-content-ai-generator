@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "crypto";
 
-const VIDEO_BUCKET = "videos";
+const HERO_AD_DRAFT_BUCKET = "hero-ad-drafts";
 const FORMATS = new Set(["vertical", "horizontal"]);
 
 function safeEqual(left, right) {
@@ -25,6 +25,10 @@ function canonicalObjectPath(jobId, format) {
   return `hero-ads/${jobId}/${format}.mp4`;
 }
 
+function storageObjectRef(bucket, objectPath) {
+  return `storage://${bucket}/${objectPath}`;
+}
+
 export function requireHeroAdWorkerToken(expectedToken) {
   return function authorizeWorker(req, res, next) {
     if (!expectedToken || !safeEqual(req.get("x-hero-ad-worker-token"), expectedToken)) {
@@ -34,7 +38,7 @@ export function requireHeroAdWorkerToken(expectedToken) {
   };
 }
 
-export function createHeroAdWorkerHandlers({ supabase }) {
+export function createHeroAdWorkerHandlers({ supabase, bucket = HERO_AD_DRAFT_BUCKET }) {
   return {
     claim: async (req, res) => {
       try {
@@ -47,7 +51,7 @@ export function createHeroAdWorkerHandlers({ supabase }) {
         for (const format of expectedFormats(job.format)) {
           const objectPath = canonicalObjectPath(job.id, format);
           const { data: signed, error: signedError } = await supabase.storage
-            .from(VIDEO_BUCKET)
+            .from(bucket)
             .createSignedUploadUrl(objectPath, { upsert: false });
           if (signedError || !signed?.signedUrl) throw new Error("signed_upload_failed");
           uploads[format] = { path: objectPath, signedUrl: signed.signedUrl };
@@ -76,23 +80,37 @@ export function createHeroAdWorkerHandlers({ supabase }) {
           }
           const folder = `hero-ads/${job.id}`;
           const { data: objects, error: listError } = await supabase.storage
-            .from(VIDEO_BUCKET).list(folder, { limit: 10, search: `${format}.mp4` });
+            .from(bucket).list(folder, { limit: 10, search: `${format}.mp4` });
           if (listError || !objects?.some((object) => object.name === `${format}.mp4`)) {
             return res.status(409).json({ error: `output_missing:${format}` });
           }
-          outputUrls[format] = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(objectPath).data.publicUrl;
+          outputUrls[format] = storageObjectRef(bucket, objectPath);
         }
         const primary = outputUrls.vertical || outputUrls.horizontal;
         const { data: ready, error: readyError } = await supabase
           .from("mkt_ad_jobs")
-          .update({ status: "READY_FOR_REVIEW", output_url: primary, output_urls: outputUrls, error_msg: null })
+          .update({
+            status: "READY_FOR_REVIEW",
+            output_bucket: bucket,
+            output_url: primary,
+            output_urls: outputUrls,
+            error_msg: null,
+          })
           .eq("id", job.id).eq("status", "RENDERING").eq("worker_id", workerId)
           .select("id,status,output_url,output_urls").single();
         if (readyError) throw new Error(`ready_update_failed:${readyError.message}`);
         const { error: handoffError } = await supabase.from("mkt_agent_handoffs").insert({
           from_agent: "hero-ad-worker", to_agent: "francis",
           topic: "MediaOS Hero Ad prêt à réviser", status: "pending",
-          payload: { job_id: job.id, product_id: job.product_id, status: "READY_FOR_REVIEW", output_urls: outputUrls, publication_performed: false },
+          payload: {
+            job_id: job.id,
+            product_id: job.product_id,
+            status: "READY_FOR_REVIEW",
+            output_bucket: bucket,
+            output_objects: outputUrls,
+            review_route: `/api/ad-jobs/${job.id}/review-urls`,
+            publication_performed: false,
+          },
         });
         if (handoffError) console.warn(`Hero Ad review handoff failed: ${handoffError.message}`);
         return res.status(200).json(ready);
@@ -121,4 +139,10 @@ export function createHeroAdWorkerHandlers({ supabase }) {
   };
 }
 
-export { canonicalObjectPath, expectedFormats, safeEqual };
+export {
+  HERO_AD_DRAFT_BUCKET,
+  canonicalObjectPath,
+  expectedFormats,
+  safeEqual,
+  storageObjectRef,
+};

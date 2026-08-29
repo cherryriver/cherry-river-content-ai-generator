@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createGenerateAdHandler,
+  createHeroAdReviewHandler,
   inferBrandName,
   normalizeHeroAdRequest,
+  parseStorageObjectRef,
 } from "./hero-ad.js";
 
 const inventoryProduct = {
@@ -156,4 +158,84 @@ test("fails closed for unauthenticated, missing, or untrusted products", async (
   const untrustedResponse = createResponse();
   await untrusted({ body: { productId: inventoryProduct.id } }, untrustedResponse);
   assert.equal(untrustedResponse.statusCode, 409);
+});
+
+function createReviewSupabase({
+  profile = { role: "creator", active: true },
+  job = {
+    id: "00000000-0000-4000-8000-000000000001",
+    created_by: "10000000-0000-4000-8000-000000000001",
+    status: "READY_FOR_REVIEW",
+    output_bucket: "hero-ad-drafts",
+    output_urls: {
+      vertical: "storage://hero-ad-drafts/hero-ads/00000000-0000-4000-8000-000000000001/vertical.mp4",
+    },
+  },
+} = {}) {
+  const signed = [];
+  return {
+    signed,
+    from(table) {
+      if (table === "mkt_profiles") {
+        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: profile, error: null }) }) }) };
+      }
+      if (table === "mkt_ad_jobs") {
+        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: job, error: null }) }) }) };
+      }
+      throw new Error(`unexpected table ${table}`);
+    },
+    storage: {
+      from(bucket) {
+        return {
+          createSignedUrl: async (objectPath, expiresIn) => {
+            signed.push({ bucket, objectPath, expiresIn });
+            return { data: { signedUrl: `https://signed.example/${objectPath}` }, error: null };
+          },
+        };
+      },
+    },
+  };
+}
+
+test("signs private review URLs on demand without persisting them", async () => {
+  const supabase = createReviewSupabase();
+  const handler = createHeroAdReviewHandler({
+    supabase,
+    getUser: async () => ({ id: "10000000-0000-4000-8000-000000000001" }),
+  });
+  const response = createResponse();
+  await handler({ params: { jobId: "00000000-0000-4000-8000-000000000001" } }, response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.expiresIn, 900);
+  assert.match(response.payload.outputs.vertical, /^https:\/\/signed\.example\//);
+  assert.deepEqual(supabase.signed, [{
+    bucket: "hero-ad-drafts",
+    objectPath: "hero-ads/00000000-0000-4000-8000-000000000001/vertical.mp4",
+    expiresIn: 900,
+  }]);
+});
+
+test("review authorization and object references fail closed", async () => {
+  const forbidden = createHeroAdReviewHandler({
+    supabase: createReviewSupabase(),
+    getUser: async () => ({ id: "20000000-0000-4000-8000-000000000002" }),
+  });
+  const forbiddenResponse = createResponse();
+  await forbidden({ params: { jobId: "00000000-0000-4000-8000-000000000001" } }, forbiddenResponse);
+  assert.equal(forbiddenResponse.statusCode, 403);
+
+  const publicOutput = createHeroAdReviewHandler({
+    supabase: createReviewSupabase({ job: {
+      id: "00000000-0000-4000-8000-000000000001",
+      created_by: "10000000-0000-4000-8000-000000000001",
+      status: "READY_FOR_REVIEW",
+      output_bucket: null,
+      output_urls: { vertical: "https://public.example/video.mp4" },
+    } }),
+    getUser: async () => ({ id: "10000000-0000-4000-8000-000000000001" }),
+  });
+  const publicResponse = createResponse();
+  await publicOutput({ params: { jobId: "00000000-0000-4000-8000-000000000001" } }, publicResponse);
+  assert.equal(publicResponse.statusCode, 409);
+  assert.equal(parseStorageObjectRef("storage://hero-ad-drafts/../secret"), null);
 });

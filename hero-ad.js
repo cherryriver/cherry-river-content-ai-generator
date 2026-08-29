@@ -1,6 +1,8 @@
 const FORMATS = new Set(["vertical", "horizontal", "both"]);
 const DEFAULT_ACCENT = "#FF1B8D";
 const DEFAULT_BACKGROUND = "#0D0D10";
+const HERO_AD_DRAFT_BUCKET = "hero-ad-drafts";
+const REVIEWABLE_STATUSES = new Set(["READY_FOR_REVIEW", "APPROVED", "REJECTED"]);
 
 class HeroAdError extends Error {
   constructor(message, statusCode = 400) {
@@ -171,4 +173,82 @@ export function createGenerateAdHandler({
   };
 }
 
-export { HeroAdError };
+function parseStorageObjectRef(value, expectedBucket = HERO_AD_DRAFT_BUCKET) {
+  const prefix = `storage://${expectedBucket}/`;
+  if (typeof value !== "string" || !value.startsWith(prefix)) return null;
+  const objectPath = value.slice(prefix.length);
+  if (!/^hero-ads\/[0-9a-f-]+\/(vertical|horizontal)\.mp4$/i.test(objectPath)) return null;
+  if (objectPath.includes("..") || objectPath.includes("\\")) return null;
+  return objectPath;
+}
+
+export function createHeroAdReviewHandler({
+  supabase,
+  getUser,
+  bucket = HERO_AD_DRAFT_BUCKET,
+  expiresIn = 900,
+}) {
+  return async function heroAdReview(req, res) {
+    try {
+      const user = await getUser(req);
+      if (!user?.id) return res.status(401).json({ error: "Unauthorized" });
+
+      const jobId = boundedText(req.params?.jobId, "", 80, "jobId");
+      if (!jobId) return res.status(400).json({ error: "jobId_required" });
+
+      const { data: profile, error: profileError } = await supabase
+        .from("mkt_profiles")
+        .select("role,active")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (profileError) throw new HeroAdError("profile_lookup_failed", 500);
+      const isAdmin = profile?.active === true && profile?.role === "admin";
+
+      const { data: job, error: jobError } = await supabase
+        .from("mkt_ad_jobs")
+        .select("id,created_by,status,output_bucket,output_urls")
+        .eq("id", jobId)
+        .maybeSingle();
+      if (jobError) throw new HeroAdError("hero_ad_lookup_failed", 500);
+      if (!job) return res.status(404).json({ error: "hero_ad_not_found" });
+      if (!isAdmin && job.created_by !== user.id) {
+        return res.status(403).json({ error: "hero_ad_review_forbidden" });
+      }
+      if (!REVIEWABLE_STATUSES.has(job.status)) {
+        return res.status(409).json({ error: "hero_ad_not_ready_for_review" });
+      }
+      if (job.output_bucket !== bucket || !job.output_urls || typeof job.output_urls !== "object") {
+        return res.status(409).json({ error: "hero_ad_outputs_not_private" });
+      }
+
+      const outputs = {};
+      for (const [format, value] of Object.entries(job.output_urls)) {
+        if (!new Set(["vertical", "horizontal"]).has(format)) {
+          throw new HeroAdError("hero_ad_output_format_invalid", 409);
+        }
+        const objectPath = parseStorageObjectRef(value, bucket);
+        if (!objectPath) throw new HeroAdError("hero_ad_output_reference_invalid", 409);
+        const { data: signed, error: signedError } = await supabase.storage
+          .from(bucket)
+          .createSignedUrl(objectPath, expiresIn);
+        if (signedError || !signed?.signedUrl) {
+          throw new HeroAdError("hero_ad_review_signing_failed", 500);
+        }
+        outputs[format] = signed.signedUrl;
+      }
+
+      return res.status(200).json({
+        jobId: job.id,
+        status: job.status,
+        expiresIn,
+        outputs,
+      });
+    } catch (error) {
+      const status = error instanceof HeroAdError ? error.statusCode : 500;
+      if (status >= 500) console.error("Hero Ad review error:", error.message);
+      return res.status(status).json({ error: error.message || "hero_ad_review_failed" });
+    }
+  };
+}
+
+export { HERO_AD_DRAFT_BUCKET, HeroAdError, parseStorageObjectRef };
