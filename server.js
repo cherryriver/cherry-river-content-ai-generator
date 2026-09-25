@@ -15,6 +15,10 @@ import { writeFile, readFile, unlink } from "fs/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
+import {
+  resolvePackaging, normalizeProductMode, normalizePlacement, placementPhrase, buildBackgroundPlatePrompt,
+  compositeProductOnBackground, transparentFraction, NO_PRODUCT_CLAUSE,
+} from "./product-composite.js";
 import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
 import { createGenerateAdHandler, createHeroAdReviewHandler } from "./hero-ad.js";
 import { createHeroAdWorkerHandlers, requireHeroAdWorkerToken } from "./hero-ad-worker-api.js";
@@ -707,11 +711,26 @@ app.post("/api/generate-concept-batch", async (req, res) => {
   }
 });
 
-// Core image generation pipeline — used by /api/generate-image (existing marketing photography pipeline)
-async function generateProductImage({ product, productName, productColor, userPrompt, format, quality, quantity, userId, userEmail }) {
+// Core image generation pipeline — used by /api/generate-image (UI page GenerateImage.jsx AND the MCP
+// generate_image tool hit this same route/function).
+//
+// productMode "original" (default): the AI generates ONLY the scene; the product's original cut-out
+//   PNG is composited on top untouched (see product-composite.js). The product is never redrawn.
+// productMode "concept": the AI draws the packaging too — reserved for mockups of UNRELEASED products.
+async function generateProductImage({ product, productName, productColor, userPrompt, format, quality, quantity, userId, userEmail, productMode = "original", placement = "center" }) {
+  const mode = normalizeProductMode(productMode);
+  if (mode === "original") {
+    return generateOriginalProductImage({ product, productName, productColor, userPrompt, format, quantity, userId, userEmail, placement });
+  }
+  return generateConceptProductImage({ product, productName, productColor, userPrompt, format, quantity, userId, userEmail });
+}
+
+async function generateConceptProductImage({ product, productName, productColor, userPrompt, format, quantity, userId, userEmail }) {
   const aspect_ratio = aspectRatioMap[format] || "1:1";
-  const isCan = product && product.product_type === "can";
-  const isAverseImg = product?.name?.toLowerCase().includes("averse");
+  // Packaging comes from the real format (name + product_type), never a hard-coded can.
+  const packaging = resolvePackaging(product, productName);
+  const isCan = packaging.kind === "can355";
+  const isAverseImg = `${product?.name || ""} ${productName || ""}`.toLowerCase().includes("averse");
 
   let enhancedPrompt;
   try {
@@ -721,12 +740,10 @@ async function generateProductImage({ product, productName, productColor, userPr
     enhancedPrompt = userPrompt;
   }
 
-  const canPrefix = isCan
-    ? "tall slim 355ml cylindrical aluminum beverage can standing perfectly upright at 90 degrees, exact same can design and label as the reference image, label text sharp and undistorted, "
-    : isAverseImg
+  const shapePrefix = isAverseImg && packaging.kind.startsWith("bottle")
     ? "frosted matte white elongated spirit bottle standing perfectly upright, distinctive colored dome-shaped base cap, minimalist 'a|v|e|r|s|e' architectural label with pipe separators, Cherry River dome cap branding, label text sharp and undistorted, "
-    : "";
-  const prompt = canPrefix + enhancedPrompt;
+    : `${packaging.descriptor}, label text sharp and undistorted, `;
+  const prompt = shapePrefix + enhancedPrompt;
 
   const inputPayload = {
     prompt,
@@ -768,7 +785,7 @@ async function generateProductImage({ product, productName, productColor, userPr
     url,
     product: productName,
     color: productColor || "#888888",
-    prompt,
+    prompt: `[concept] ${prompt}`,
     type: "image",
     date: new Date().toISOString(),
     user_id: userId,
@@ -779,7 +796,198 @@ async function generateProductImage({ product, productName, productColor, userPr
   const { data: savedGenerations, error } = await insertGenerations(rows);
   if (error) throw error;
 
-  return { images, enhancedPrompt, savedGenerations };
+  return { images, enhancedPrompt, savedGenerations, productMode: "concept", packaging: packaging.kind };
+}
+
+// --- Original-product composite (stills) ---
+
+const CUTOUT_PREFIX = "cutouts";
+// Background-removal models tried in order (mask only; see getProductCutout).
+const CUTOUT_MODELS = (process.env.CUTOUT_MODEL ? [process.env.CUTOUT_MODEL] : [])
+  .concat(["recraft-ai/recraft-remove-background", "bria/remove-background"]);
+
+async function removeBackgroundMask(imageUrl) {
+  let lastErr;
+  for (const model of CUTOUT_MODELS) {
+    try {
+      const output = await replicate.run(model, { input: { image: imageUrl } });
+      const first = Array.isArray(output) ? output[0] : output;
+      return first?.url ? first.url() : String(first);
+    } catch (e) {
+      lastErr = e;
+      console.error(`[composite] cutout model ${model} failed:`, e.message);
+    }
+  }
+  throw new Error(`Background removal failed: ${lastErr?.message || "no model available"}`);
+}
+
+function cutoutPath(productId) {
+  return `${CUTOUT_PREFIX}/${String(productId).replace(/[^A-Za-z0-9_-]/g, "")}.png`;
+}
+
+function cutoutPublicUrl(productId) {
+  return supabase.storage.from(BUCKET).getPublicUrl(cutoutPath(productId)).data.publicUrl;
+}
+
+async function fetchBuffer(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${r.status} for ${new URL(url).hostname}`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+// Returns the product's cut-out PNG (transparent background), caching it in Storage.
+// Priority: 1) cached/official cut-out in product-images/cutouts/<id>.png (set_product_cutout)
+//           2) products.image when it is already a transparent PNG
+//           3) background removal on products.image (mask only — product pixels are preserved)
+async function getProductCutout(product) {
+  const { data: cached } = await supabase.storage.from(BUCKET).download(cutoutPath(product.id));
+  if (cached) {
+    return { buffer: Buffer.from(await cached.arrayBuffer()), url: cutoutPublicUrl(product.id), source: "cutout_bank" };
+  }
+  const original = await fetchBuffer(product.image);
+  if (await transparentFraction(original) > 0.05) {
+    await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), await sharp(original).png().toBuffer(), { contentType: "image/png", upsert: true });
+    return { buffer: original, url: cutoutPublicUrl(product.id), source: "product_image_png" };
+  }
+  const maskedUrl = await removeBackgroundMask(product.image);
+  const masked = await fetchBuffer(maskedUrl);
+  // Keep the ORIGINAL RGB pixels and only borrow the alpha mask from the removal model,
+  // so the label/colours can never be altered by the cut-out step either.
+  const meta = await sharp(original).metadata();
+  const alpha = await sharp(masked).ensureAlpha().extractChannel(3)
+    .resize(meta.width, meta.height, { fit: "fill" }).raw().toBuffer();
+  const cutout = await sharp(original).removeAlpha()
+    .joinChannel(alpha, { raw: { width: meta.width, height: meta.height, channels: 1 } })
+    .png().toBuffer();
+  await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), cutout, { contentType: "image/png", upsert: true });
+  return { buffer: cutout, url: cutoutPublicUrl(product.id), source: "auto_background_removal" };
+}
+
+async function enhanceBackgroundPrompt(userPrompt, packaging, placement) {
+  const msg = await anthropic.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 300,
+    messages: [{ role: "user", content: `You are a world-class advertising photography director for premium beverage brands.
+Write a prompt for an EMPTY BACKGROUND PLATE. The real product (${packaging.surfaceHint}) will be composited into the photo afterwards, so the image must NOT contain it or any other bottle, can, carton or packaging.
+Keep it under 110 words. Return ONLY the prompt, nothing else.
+
+Scene direction from the client: ${userPrompt}
+
+Rules:
+- Keep the client's scene, props, season and mood.
+- A clear, empty, flat spot on the tabletop in the ${placementPhrase(placement)}, foreground, where the product will stand; props frame that spot but never occupy it.
+- Straight-on eye-level camera at the height of a standing bottle, 50mm, table surface in the lower third, background softly out of focus; describe lighting direction precisely.
+- Glasses may contain a drink but must not show any branding.
+- End with: "${NO_PRODUCT_CLAUSE} Professional beverage advertising photography."` }],
+  });
+  const text = msg.content[0].text.trim();
+  return text.includes("NO bottle") ? text : `${text} ${NO_PRODUCT_CLAUSE}`;
+}
+
+// Vision guard: Flux sometimes still paints a bottle/can in the plate. Reject and retry.
+async function backgroundHasProduct(buffer) {
+  const small = await sharp(buffer).resize(768, 768, { fit: "inside" }).jpeg({ quality: 80 }).toBuffer();
+  const message = await anthropic.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 5,
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: small.toString("base64") } },
+      { type: "text", text: "Does this image contain a bottle, a drink can, a carton or any packaged/labelled product (drinking glasses do not count)? Answer exactly YES or NO." },
+    ] }],
+  });
+  return (message.content[0].text || "").trim().toUpperCase().startsWith("YES");
+}
+
+const MAX_BACKGROUND_ATTEMPTS = 2;
+
+async function generateBackgroundPlate(prompt, aspect_ratio) {
+  let last;
+  for (let attempt = 1; attempt <= MAX_BACKGROUND_ATTEMPTS; attempt++) {
+    const output = await replicate.run("black-forest-labs/flux-2-pro", {
+      input: {
+        prompt,
+        resolution: "4 MP",
+        aspect_ratio,
+        output_format: "png",
+        output_quality: 100,
+        safety_tolerance: 5,
+        guidance: 3.5,
+        prompt_upsampling: false,
+        // No input_images on purpose: the model never sees the product, so it cannot redraw it.
+      },
+    });
+    const url = output.url ? output.url() : String(output);
+    last = await fetchBuffer(url);
+    let dirty = false;
+    try { dirty = await backgroundHasProduct(last); } catch (e) { console.error("Background check failed:", e.message); }
+    if (!dirty) return { buffer: last, attempts: attempt, clean: true };
+    console.warn(`[composite] background attempt ${attempt} contained a product — retrying`);
+  }
+  return { buffer: last, attempts: MAX_BACKGROUND_ATTEMPTS, clean: false };
+}
+
+async function generateOriginalProductImage({ product, productName, productColor, userPrompt, format, quantity, userId, userEmail, placement }) {
+  if (!product) {
+    const err = new Error("productMode 'original' requires a valid productId from the catalogue (use productMode 'concept' only for unreleased product mockups).");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!product.image) {
+    const err = new Error("product_inventory_image_missing");
+    err.statusCode = 409;
+    throw err;
+  }
+  const aspect_ratio = aspectRatioMap[format] || "1:1";
+  const packaging = resolvePackaging(product, productName);
+  const place = normalizePlacement(placement);
+  const cutout = await getProductCutout(product);
+
+  let backgroundPrompt;
+  try {
+    backgroundPrompt = await enhanceBackgroundPrompt(userPrompt, packaging, place);
+  } catch (e) {
+    console.error("Background prompt enhancement failed:", e.message);
+    backgroundPrompt = buildBackgroundPlatePrompt(userPrompt, packaging, place);
+  }
+
+  const count = Math.min(quantity || 1, 4);
+  const stamp = Date.now();
+  const outputs = await Promise.all(Array.from({ length: count }, async (_, i) => {
+    const plate = await generateBackgroundPlate(backgroundPrompt, aspect_ratio);
+    const backgroundUrl = await uploadToStorage(plate.buffer, "image/png", `generated/bg-${stamp}-${i}.png`);
+    const { buffer } = await compositeProductOnBackground({
+      backgroundBuffer: plate.buffer, cutoutBuffer: cutout.buffer, packaging, placement: place,
+    });
+    const url = await uploadToStorage(buffer, "image/png", `generated/gen-${stamp}-${i}.png`);
+    return { url, backgroundUrl, backgroundClean: plate.clean, attempts: plate.attempts };
+  }));
+
+  const images = outputs.map((o) => o.url);
+  const rows = outputs.map((o) => ({
+    id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+    url: o.url,
+    product: product.name || productName,
+    color: productColor || product.color || "#888888",
+    prompt: `[original composite · ${packaging.kind} · cutout:${cutout.source}] ${backgroundPrompt}`,
+    type: "image",
+    date: new Date().toISOString(),
+    user_id: userId,
+    user_email: userEmail,
+    cost_usd: FLUX_COST_PER_IMAGE * o.attempts,
+  }));
+
+  const { data: savedGenerations, error } = await insertGenerations(rows);
+  if (error) throw error;
+
+  return {
+    images,
+    enhancedPrompt: backgroundPrompt,
+    savedGenerations,
+    productMode: "original",
+    packaging: packaging.kind,
+    cutout: { url: cutout.url, source: cutout.source },
+    backgrounds: outputs.map((o) => ({ url: o.backgroundUrl, clean: o.backgroundClean, attempts: o.attempts })),
+  };
 }
 
 // Extract authenticated user ID from Bearer token
@@ -1215,15 +1423,13 @@ app.post("/api/generate-image", async (req, res) => {
   try {
     const user = await getUser(req)
     if (!user) return res.status(401).json({ error: "Unauthorized" })
-    const { productName, productColor, productId, prompt: userPrompt, format, quality, quantity } = req.body;
+    const { productName, productColor, productId, prompt: userPrompt, format, quality, quantity, productMode, placement } = req.body;
 
-    const { data: product } = await supabase
-      .from("products")
-      .select("*")
-      .eq("id", productId)
-      .maybeSingle();
+    const { data: product } = productId
+      ? await supabase.from("products").select("*").eq("id", productId).maybeSingle()
+      : { data: null };
 
-    const { images, enhancedPrompt, savedGenerations } = await generateProductImage({
+    const result = await generateProductImage({
       product,
       productName,
       productColor,
@@ -1233,12 +1439,46 @@ app.post("/api/generate-image", async (req, res) => {
       quantity,
       userId: user.id,
       userEmail: user.email,
+      productMode,
+      placement,
     });
 
-    res.json({ success: true, images, generations: savedGenerations, enhancedPrompt });
+    res.json({ success: true, ...result, generations: result.savedGenerations, savedGenerations: undefined });
   } catch (error) {
     console.error("Generation error:", error);
-    res.status(500).json({ success: false, error: error.message || "Failed to generate image" });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message || "Failed to generate image" });
+  }
+});
+
+// Register the brand-bank cut-out (transparent PNG) for a product. The composite pipeline uses it
+// in priority over products.image. Source must be Dropbox or this project's Supabase Storage.
+const CUTOUT_SOURCE_HOSTS = [/\.dropboxusercontent\.com$/i, /^www\.dropbox\.com$/i, /^bypedtyxtnmmdsyrgwpj\.supabase\.co$/i];
+
+app.post("/api/products/:id/cutout", async (req, res) => {
+  try {
+    const user = await getUser(req);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const { imageUrl } = req.body || {};
+    let src;
+    try { src = new URL(imageUrl); } catch { return res.status(400).json({ error: "imageUrl_invalid" }); }
+    if (src.protocol !== "https:" || !CUTOUT_SOURCE_HOSTS.some((re) => re.test(src.hostname))) {
+      return res.status(400).json({ error: "imageUrl_host_not_allowed" });
+    }
+    const { data: product } = await supabase.from("products").select("id,name").eq("id", req.params.id).maybeSingle();
+    if (!product) return res.status(404).json({ error: "product_not_found" });
+
+    const raw = await fetchBuffer(src.toString());
+    if (raw.length > 40 * 1024 * 1024) return res.status(413).json({ error: "image_too_large" });
+    const transparent = await transparentFraction(raw);
+    if (transparent < 0.05) return res.status(422).json({ error: "image_is_not_a_cutout", transparentFraction: transparent });
+    const png = await sharp(raw).png().toBuffer();
+    const meta = await sharp(png).metadata();
+    const { error } = await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), png, { contentType: "image/png", upsert: true });
+    if (error) throw new Error(`Storage upload failed: ${error.message}`);
+    res.json({ success: true, productId: product.id, name: product.name, cutoutUrl: cutoutPublicUrl(product.id), width: meta.width, height: meta.height, transparentFraction: Number(transparent.toFixed(3)) });
+  } catch (error) {
+    console.error("Cutout upload error:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to store cutout" });
   }
 });
 

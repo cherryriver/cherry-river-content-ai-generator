@@ -96,17 +96,26 @@ function buildServer(req) {
 
   // ---- Generation tools: create DRAFT assets in the account. Not public publishing. ----
   server.tool("generate_image",
-    "Generate marketing product photography (Flux). Creates a DRAFT asset (~$0.055/image). Human validation required before any public use.",
+    "Generate marketing product photography. Creates a DRAFT asset (~$0.055/image). Human validation required before any public use. " +
+    "Default productMode 'original': the AI generates ONLY the scene and the product's original cut-out PNG from the brand bank is composited on top (never redrawn) — requires productId. " +
+    "productMode 'concept' lets the AI draw the packaging; use it ONLY for mockups of unreleased products.",
     {
       productName: z.string().describe("Product name to feature"),
       productColor: z.string().optional().describe("Brand/liquid color (hex or name)"),
-      productId: z.string().optional().describe("Existing product id, to use its reference photo"),
-      prompt: z.string().optional().describe("Extra creative direction"),
-      format: z.string().optional().describe("Aspect/format, e.g. '1:1','4:5','16:9'"),
+      productId: z.string().optional().describe("Catalogue product id (list_products). Required for productMode 'original'"),
+      prompt: z.string().optional().describe("Scene / decor direction (the product itself is never described or redrawn in 'original' mode)"),
+      format: z.string().optional().describe("Aspect/format, e.g. '1:1','4:5','16:9','9:16'"),
       quality: z.string().optional(),
       quantity: z.number().int().positive().max(4).optional().describe("Number of images (default 1)"),
+      productMode: z.enum(["original", "concept"]).optional().describe("'original' (default): real product PNG composited on an AI scene. 'concept': AI-drawn packaging, unreleased products only"),
+      placement: z.enum(["center", "left", "right"]).optional().describe("Where the product stands in the frame (original mode, default center)"),
     },
     async (a) => { try { return ok(await apiCall(req, "POST", "/api/generate-image", a)); } catch (e) { return fail(e); } });
+
+  server.tool("set_product_cutout",
+    "Register the official transparent cut-out PNG (brand bank, e.g. Dropbox 'PNG - bouteilles spiritueux') used by generate_image in 'original' mode. imageUrl must be an https Dropbox (dropboxusercontent.com) or Supabase Storage URL of a PNG with transparency.",
+    { productId: z.string(), imageUrl: z.string().url() },
+    async ({ productId, imageUrl }) => { try { return ok(await apiCall(req, "POST", `/api/products/${encodeURIComponent(productId)}/cutout`, { imageUrl })); } catch (e) { return fail(e); } });
 
   server.tool("generate_collection",
     "Generate a styled collection shot featuring multiple products together (~$0.055/image). DRAFT asset.",
