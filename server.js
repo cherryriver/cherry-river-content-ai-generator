@@ -1482,6 +1482,31 @@ app.post("/api/products/:id/cutout", async (req, res) => {
   }
 });
 
+// Read-only JSON thumbnail of an already-public generated image or cut-out, for review tooling
+// that cannot load binary images (returns base64 JPEG). Restricted to product-images/{generated,cutouts}.
+app.get("/api/preview", async (req, res) => {
+  try {
+    const path = String(req.query.path || "");
+    if (!/^(generated|cutouts)\/[A-Za-z0-9._-]+\.png$/.test(path)) return res.status(400).json({ error: "path_not_allowed" });
+    const width = Math.min(1600, Math.max(64, parseInt(req.query.w, 10) || 900));
+    const { data, error } = await supabase.storage.from(BUCKET).download(path);
+    if (error || !data) return res.status(404).json({ error: "not_found" });
+    const buf = Buffer.from(await data.arrayBuffer());
+    const meta = await sharp(buf).metadata();
+    const x = req.query.x != null ? parseFloat(req.query.x) : null;
+    let img = sharp(buf).flatten({ background: "#ffffff" });
+    if (x != null && req.query.y != null && req.query.cw != null && req.query.ch != null) {
+      const crop = ["x", "y", "cw", "ch"].map((k) => Math.max(0, Math.min(1, parseFloat(req.query[k]))));
+      const left = Math.round(crop[0] * meta.width), top = Math.round(crop[1] * meta.height);
+      img = img.extract({ left, top, width: Math.max(1, Math.min(meta.width - left, Math.round(crop[2] * meta.width))), height: Math.max(1, Math.min(meta.height - top, Math.round(crop[3] * meta.height))) });
+    }
+    const jpeg = await img.resize({ width, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+    res.json({ path, width: meta.width, height: meta.height, jpegBase64: jpeg.toString("base64") });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // HERO AD queues local Remotion work only. No Chromium/FFmpeg render runs on Vercel.
 app.post("/api/generate-ad", createGenerateAdHandler({
   supabase,
