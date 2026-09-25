@@ -36,16 +36,23 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-function baseUrl(req) {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, "");
+function selfBaseUrl(req) {
   const proto = req.headers["x-forwarded-proto"] || "https";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
   return `${proto}://${host}`;
 }
 
-async function apiCall(req, method, path, body) {
+function baseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  return selfBaseUrl(req);
+}
+
+// { self: true } targets the deployment serving this MCP endpoint instead of PUBLIC_BASE_URL
+// (which points at the separate legacy "cherry-river-ai" project). Image generation must run
+// here, where the original-product composite pipeline lives.
+async function apiCall(req, method, path, body, { self = false } = {}) {
   const token = await getAccessToken();
-  const res = await fetch(baseUrl(req) + path, {
+  const res = await fetch((self ? selfBaseUrl(req) : baseUrl(req)) + path, {
     method,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -110,12 +117,12 @@ function buildServer(req) {
       productMode: z.enum(["original", "concept"]).optional().describe("'original' (default): real product PNG composited on an AI scene. 'concept': AI-drawn packaging, unreleased products only"),
       placement: z.enum(["center", "left", "right"]).optional().describe("Where the product stands in the frame (original mode, default center)"),
     },
-    async (a) => { try { return ok(await apiCall(req, "POST", "/api/generate-image", a)); } catch (e) { return fail(e); } });
+    async (a) => { try { return ok(await apiCall(req, "POST", "/api/generate-image", a, { self: true })); } catch (e) { return fail(e); } });
 
   server.tool("set_product_cutout",
     "Register the official transparent cut-out PNG (brand bank, e.g. Dropbox 'PNG - bouteilles spiritueux') used by generate_image in 'original' mode. imageUrl must be an https Dropbox (dropboxusercontent.com) or Supabase Storage URL of a PNG with transparency.",
     { productId: z.string(), imageUrl: z.string().url() },
-    async ({ productId, imageUrl }) => { try { return ok(await apiCall(req, "POST", `/api/products/${encodeURIComponent(productId)}/cutout`, { imageUrl })); } catch (e) { return fail(e); } });
+    async ({ productId, imageUrl }) => { try { return ok(await apiCall(req, "POST", `/api/products/${encodeURIComponent(productId)}/cutout`, { imageUrl }, { self: true })); } catch (e) { return fail(e); } });
 
   server.tool("generate_collection",
     "Generate a styled collection shot featuring multiple products together (~$0.055/image). DRAFT asset.",
