@@ -172,6 +172,8 @@ export function computePlacement({ bgWidth, bgHeight, cutWidth, cutHeight, packa
 export async function compositeProductOnBackground({ backgroundBuffer, cutoutBuffer, packaging, placement = "center" }) {
   const bgMeta = await sharp(backgroundBuffer).metadata();
   const bgWidth = bgMeta.width, bgHeight = bgMeta.height;
+  // Never paste an opaque rectangle: the product must come with its own transparency.
+  if ((await transparentFraction(cutoutBuffer)) < 0.05) throw new Error("cutout_has_no_transparency");
   const trimmed = await trimCutout(cutoutBuffer);
   const tMeta = await sharp(trimmed).metadata();
   const box = computePlacement({
@@ -234,4 +236,31 @@ export async function compositeProductOnBackground({ backgroundBuffer, cutoutBuf
 
   const out = await sharp(backgroundBuffer).composite(layers).png().toBuffer();
   return { buffer: out, box, background: { width: bgWidth, height: bgHeight } };
+}
+
+// A usable cut-out has a real transparent surround but is not empty.
+export async function isUsableCutout(buffer) {
+  const t = await transparentFraction(buffer);
+  return t >= 0.05 && t <= 0.97;
+}
+
+// Background-removal models return either an RGBA cut-out or a greyscale matte (white = keep).
+// Build an alpha channel of the requested size from whichever we got.
+export async function alphaFromRemovalOutput(outputBuffer, width, height) {
+  const meta = await sharp(outputBuffer).metadata();
+  const hasRealAlpha = meta.hasAlpha && (await transparentFraction(outputBuffer)) > 0.01;
+  const matte = hasRealAlpha
+    ? sharp(outputBuffer).ensureAlpha().extractChannel(3)
+    : sharp(outputBuffer).removeAlpha().greyscale().extractChannel(0);
+  return matte.resize(width, height, { fit: "fill" }).raw().toBuffer();
+}
+
+// Apply an alpha matte to the ORIGINAL pixels — the product's RGB is never taken from the model.
+export async function applyAlpha(originalBuffer, alpha) {
+  // Materialise RGB first: in one sharp pipeline removeAlpha() runs after joinChannel() and
+  // would drop the matte we just added (this produced opaque rectangles in production).
+  const { data: rgb, info } = await sharp(originalBuffer).toColourspace("srgb").removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  return sharp(rgb, { raw: { width: info.width, height: info.height, channels: 3 } })
+    .joinChannel(alpha, { raw: { width: info.width, height: info.height, channels: 1 } })
+    .png().toBuffer();
 }

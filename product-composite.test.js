@@ -79,3 +79,25 @@ test("composite pastes the original product pixels untouched (uniform scale only
   assert.ok(under[0] < 180, "no contact shadow under the product");
   assert.deepEqual(await px(20, 20), [200, 120, 60]);
 });
+
+test("opaque packshots are rejected; greyscale mattes become alpha on the original pixels", async () => {
+  const { isUsableCutout, alphaFromRemovalOutput, applyAlpha } = await import("./product-composite.js");
+  // Black bottle on black background, like the catalogue JPEGs.
+  const original = await sharp({ create: { width: 100, height: 200, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+    .composite([{ input: { create: { width: 40, height: 160, channels: 3, background: { r: 20, g: 20, b: 22 } } }, left: 30, top: 20 }])
+    .jpeg().toBuffer();
+  assert.equal(await isUsableCutout(original), false);
+  const bg = await sharp({ create: { width: 400, height: 400, channels: 3, background: "#888" } }).png().toBuffer();
+  await assert.rejects(
+    compositeProductOnBackground({ backgroundBuffer: bg, cutoutBuffer: original, packaging: resolvePackaging({ name: "X 750mL" }) }),
+    /no_transparency/,
+  );
+  // Greyscale matte (no alpha channel) as returned by some removal models.
+  const matte = await sharp({ create: { width: 100, height: 200, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+    .composite([{ input: { create: { width: 40, height: 160, channels: 3, background: { r: 255, g: 255, b: 255 } } }, left: 30, top: 20 }])
+    .png().toBuffer();
+  const cut = await applyAlpha(original, await alphaFromRemovalOutput(matte, 100, 200));
+  assert.equal(await isUsableCutout(cut), true);
+  const trimmed = await sharp(await trimCutout(cut)).metadata();
+  assert.deepEqual([trimmed.width, trimmed.height], [40, 160]);
+});

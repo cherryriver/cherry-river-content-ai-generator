@@ -17,7 +17,8 @@ import { createHash } from "crypto";
 import { extractAccessToken } from "./auth-token.js";
 import {
   resolvePackaging, normalizeProductMode, normalizePlacement, placementPhrase, buildBackgroundPlatePrompt,
-  compositeProductOnBackground, transparentFraction, NO_PRODUCT_CLAUSE,
+  compositeProductOnBackground, transparentFraction, isUsableCutout, alphaFromRemovalOutput, applyAlpha,
+  NO_PRODUCT_CLAUSE,
 } from "./product-composite.js";
 import { resolveAuthenticatedUser } from "./mediaos-core-auth.js";
 import { createGenerateAdHandler, createHeroAdReviewHandler } from "./hero-ad.js";
@@ -840,27 +841,37 @@ async function fetchBuffer(url) {
 //           2) products.image when it is already a transparent PNG
 //           3) background removal on products.image (mask only — product pixels are preserved)
 async function getProductCutout(product) {
-  const { data: cached } = await supabase.storage.from(BUCKET).download(cutoutPath(product.id));
-  if (cached) {
-    return { buffer: Buffer.from(await cached.arrayBuffer()), url: cutoutPublicUrl(product.id), source: "cutout_bank" };
+  // 1) Official brand-bank cut-out registered with set_product_cutout.
+  const { data: official } = await supabase.storage.from(BUCKET).download(cutoutPath(product.id));
+  if (official) {
+    const buffer = Buffer.from(await official.arrayBuffer());
+    if (await isUsableCutout(buffer)) return { buffer, url: cutoutPublicUrl(product.id), source: "cutout_bank" };
+    console.warn(`[composite] ignoring unusable cut-out ${cutoutPath(product.id)}`);
   }
+  // 2) products.image is already a transparent PNG (e.g. the Dropbox PNG uploaded on the Products page).
   const original = await fetchBuffer(product.image);
-  if (await transparentFraction(original) > 0.05) {
-    await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), await sharp(original).png().toBuffer(), { contentType: "image/png", upsert: true });
-    return { buffer: original, url: cutoutPublicUrl(product.id), source: "product_image_png" };
+  if (await isUsableCutout(original)) {
+    return { buffer: original, url: product.image, source: "product_image_png" };
+  }
+  // 3) Automatic matte, cached per source image so replacing products.image is never shadowed.
+  const autoPath = `${CUTOUT_PREFIX}/auto-${String(product.id).replace(/[^A-Za-z0-9_-]/g, "")}-${createHash("sha1").update(product.image).digest("hex").slice(0, 10)}.png`;
+  const autoUrl = supabase.storage.from(BUCKET).getPublicUrl(autoPath).data.publicUrl;
+  const { data: cachedAuto } = await supabase.storage.from(BUCKET).download(autoPath);
+  if (cachedAuto) {
+    const buffer = Buffer.from(await cachedAuto.arrayBuffer());
+    if (await isUsableCutout(buffer)) return { buffer, url: autoUrl, source: "auto_background_removal" };
   }
   const maskedUrl = await removeBackgroundMask(product.image);
   const masked = await fetchBuffer(maskedUrl);
-  // Keep the ORIGINAL RGB pixels and only borrow the alpha mask from the removal model,
-  // so the label/colours can never be altered by the cut-out step either.
   const meta = await sharp(original).metadata();
-  const alpha = await sharp(masked).ensureAlpha().extractChannel(3)
-    .resize(meta.width, meta.height, { fit: "fill" }).raw().toBuffer();
-  const cutout = await sharp(original).removeAlpha()
-    .joinChannel(alpha, { raw: { width: meta.width, height: meta.height, channels: 1 } })
-    .png().toBuffer();
-  await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), cutout, { contentType: "image/png", upsert: true });
-  return { buffer: cutout, url: cutoutPublicUrl(product.id), source: "auto_background_removal" };
+  const cutout = await applyAlpha(original, await alphaFromRemovalOutput(masked, meta.width, meta.height));
+  if (!(await isUsableCutout(cutout))) {
+    const err = new Error("Automatic cut-out failed for this product photo. Register the official transparent PNG (set_product_cutout, or replace the product image with the PNG on the Products page) and retry.");
+    err.statusCode = 422;
+    throw err;
+  }
+  await supabase.storage.from(BUCKET).upload(autoPath, cutout, { contentType: "image/png", upsert: true });
+  return { buffer: cutout, url: autoUrl, source: "auto_background_removal" };
 }
 
 async function enhanceBackgroundPrompt(userPrompt, packaging, placement) {
@@ -1470,7 +1481,7 @@ app.post("/api/products/:id/cutout", async (req, res) => {
     const raw = await fetchBuffer(src.toString());
     if (raw.length > 40 * 1024 * 1024) return res.status(413).json({ error: "image_too_large" });
     const transparent = await transparentFraction(raw);
-    if (transparent < 0.05) return res.status(422).json({ error: "image_is_not_a_cutout", transparentFraction: transparent });
+    if (!(await isUsableCutout(raw))) return res.status(422).json({ error: "image_is_not_a_cutout", transparentFraction: transparent });
     const png = await sharp(raw).png().toBuffer();
     const meta = await sharp(png).metadata();
     const { error } = await supabase.storage.from(BUCKET).upload(cutoutPath(product.id), png, { contentType: "image/png", upsert: true });
